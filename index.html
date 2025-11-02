@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SecretText - Real-Time Chat</title>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Load Inter Font -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+    <style>
+        /* Custom Styles for Dark Mode and Layout */
+        :root {
+            --primary-color: #4f46e5; /* Indigo-600 */
+        }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #111827; /* Dark Gray BG */
+        }
+
+        /* Fixed Footer for Input and Full-Screen Scroll */
+        #chat-container {
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* Scrollable Area */
+        #messages {
+            flex-grow: 1;
+            overflow-y: auto;
+            -webkit-overflow-scrolling: touch; /* Enable smooth scrolling on iOS */
+            padding-bottom: 2rem; /* Ensure last message is visible above input */
+        }
+
+        /* Hide Scrollbar for cleaner look (optional) */
+        #messages::-webkit-scrollbar {
+            display: none;
+        }
+        #messages {
+            -ms-overflow-style: none;  /* IE and Edge */
+            scrollbar-width: none;  /* Firefox */
+        }
+
+        /* Custom Chat Bubble Colors */
+        .bubble-other {
+            background-color: #374151; /* Gray-700 */
+        }
+        .bubble-mine {
+            background-color: var(--primary-color); /* Indigo-600 */
+        }
+
+        /* Input field focus glow */
+        #message-input:focus {
+            box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.5); /* Indigo glow */
+            border-color: var(--primary-color);
+        }
+    </style>
+</head>
+<body class="bg-gray-900 text-gray-100">
+
+    <div id="chat-container" class="max-w-4xl mx-auto">
+        <!-- Header -->
+        <header class="p-4 border-b border-gray-700 shadow-lg bg-gray-800 fixed top-0 w-full max-w-4xl mx-auto z-10">
+            <h1 class="text-xl font-bold text-indigo-400">SecretText Chat</h1>
+            <p id="current-user-info" class="text-sm text-gray-400"></p>
+        </header>
+
+        <!-- Message Area -->
+        <div id="messages" class="px-4 pt-20 pb-20 space-y-4">
+            <!-- Messages will be injected here -->
+            <div id="loading-indicator" class="text-center py-8 text-indigo-400">Loading messages...</div>
+        </div>
+
+        <!-- Fixed Input/Form Area -->
+        <div class="fixed bottom-0 w-full max-w-4xl p-4 bg-gray-800 border-t border-gray-700 shadow-2xl z-10">
+            <form id="message-form" class="flex space-x-2">
+                <input
+                    type="text"
+                    id="message-input"
+                    placeholder="Type your message..."
+                    class="flex-1 p-3 text-white bg-gray-700 border border-gray-600 rounded-xl shadow-md focus:outline-none transition duration-150"
+                    autocomplete="off"
+                    disabled
+                />
+                <button
+                    type="submit"
+                    id="send-button"
+                    class="p-3 bg-indigo-600 text-white font-semibold rounded-xl shadow-md hover:bg-indigo-500 transition duration-150 disabled:bg-indigo-800 disabled:opacity-50"
+                    disabled
+                >
+                    Send
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <!-- Nickname Modal -->
+    <div id="nickname-modal" class="fixed inset-0 bg-gray-900 bg-opacity-95 flex items-center justify-center z-50">
+        <div class="bg-gray-800 p-8 rounded-2xl shadow-2xl max-w-sm w-full border border-indigo-500">
+            <h2 class="text-2xl font-bold mb-4 text-indigo-400">Welcome to SecretText</h2>
+            <p class="text-gray-300 mb-6">Please enter a nickname to join the chat.</p>
+            <form id="nickname-form">
+                <input
+                    type="text"
+                    id="nickname-input"
+                    placeholder="Your Nickname"
+                    required
+                    maxlength="15"
+                    class="w-full p-3 mb-4 text-white bg-gray-700 border border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                />
+                <button
+                    type="submit"
+                    class="w-full p-3 bg-indigo-600 text-white font-bold rounded-lg hover:bg-indigo-500 transition duration-150"
+                >
+                    Join Chat
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged, setPersistence, browserSessionPersistence } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, addDoc, query, orderBy, onSnapshot, serverTimestamp, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Global variables provided by the environment
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        // Element references
+        const nicknameModal = document.getElementById('nickname-modal');
+        const nicknameForm = document.getElementById('nickname-form');
+        const nicknameInput = document.getElementById('nickname-input');
+        const messageForm = document.getElementById('message-form');
+        const messageInput = document.getElementById('message-input');
+        const messagesContainer = document.getElementById('messages');
+        const sendButton = document.getElementById('send-button');
+        const loadingIndicator = document.getElementById('loading-indicator');
+        const userInfo = document.getElementById('current-user-info');
+
+        let userNickname = localStorage.getItem('chatNickname') || null;
+        let authUserId = null;
+        let db;
+        let auth;
+
+        /**
+         * Initializes Firebase and authenticates the user.
+         */
+        async function initializeFirebase() {
+            try {
+                // Set Firestore log level for debugging
+                setLogLevel('Debug');
+
+                const app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+
+                // Set auth persistence to session to remember the user during the session
+                await setPersistence(auth, browserSessionPersistence);
+
+                // Check if a custom token is available for sign-in
+                if (initialAuthToken) {
+                    await signInWithCustomToken(auth, initialAuthToken);
+                } else {
+                    // Fallback to anonymous sign-in if no custom token is provided
+                    await signInAnonymously(auth);
+                }
+
+                onAuthStateChanged(auth, (user) => {
+                    if (user) {
+                        authUserId = user.uid;
+                        console.log("Firebase Auth successful. User ID:", authUserId);
+
+                        // If authenticated but no nickname is set, show the modal
+                        if (!userNickname) {
+                            nicknameModal.style.display = 'flex';
+                        } else {
+                            // User is ready to chat
+                            setupChatInterface();
+                        }
+                    } else {
+                        console.log("No user signed in.");
+                        // Force anonymous sign-in if no user is found
+                        signInAnonymously(auth);
+                    }
+                });
+
+            } catch (error) {
+                console.error("Firebase initialization or authentication error:", error);
+                // Display a simple error message in the UI
+                messagesContainer.innerHTML = `<div class="text-center text-red-500 py-8">Error connecting to chat service. Please check console for details.</div>`;
+            }
+        }
+
+        /**
+         * Converts Firebase Timestamp to a readable HH:MM AM/PM string.
+         * @param {object} timestamp - The Firestore Timestamp object.
+         * @returns {string} Formatted time string.
+         */
+        function formatTime(timestamp) {
+            if (!timestamp) return '...';
+            const date = timestamp.toDate();
+            return date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+        }
+
+        /**
+         * Renders a single chat message bubble.
+         * @param {object} message - The message object from Firestore.
+         */
+        function renderMessage(message) {
+            const isMine = message.userId === authUserId;
+            const alignment = isMine ? 'justify-end' : 'justify-start';
+            const bubbleClasses = isMine ? 'bubble-mine ml-auto' : 'bubble-other mr-auto';
+
+            // Main container
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `flex ${alignment}`;
+
+            // Chat bubble
+            const bubble = document.createElement('div');
+            bubble.className = `max-w-[80%] p-3 rounded-2xl shadow-lg ${bubbleClasses} transition-all duration-300 transform break-words`;
+            
+            // Nickname (for others)
+            const nicknameSpan = document.createElement('span');
+            nicknameSpan.className = `font-semibold ${isMine ? 'text-indigo-200' : 'text-indigo-400'} block mb-0.5`;
+            nicknameSpan.textContent = isMine ? 'You' : message.username;
+
+            // Message Text
+            const textP = document.createElement('p');
+            textP.className = 'text-sm sm:text-base';
+            textP.textContent = message.text;
+
+            // Timestamp
+            const timeSpan = document.createElement('span');
+            timeSpan.className = `text-xs mt-1 block ${isMine ? 'text-indigo-300 text-right' : 'text-gray-400 text-left'}`;
+            timeSpan.textContent = formatTime(message.timeSent);
+
+            bubble.appendChild(nicknameSpan);
+            bubble.appendChild(textP);
+            bubble.appendChild(timeSpan);
+            messageDiv.appendChild(bubble);
+
+            messagesContainer.appendChild(messageDiv);
+        }
+
+        /**
+         * Automatically scrolls the chat area to the last message.
+         */
+        function scrollToBottom(smooth = false) {
+            // Use requestAnimationFrame for smoother scrolling after DOM updates
+            requestAnimationFrame(() => {
+                messagesContainer.scrollTo({
+                    top: messagesContainer.scrollHeight,
+                    behavior: smooth ? 'smooth' : 'auto'
+                });
+            });
+        }
+
+        /**
+         * Sets up the real-time listener for messages.
+         */
+        function setupMessageListener() {
+            const messagesRef = collection(db, `artifacts/${appId}/public/data/messages`);
+            // Query: Order by time sent
+            const q = query(messagesRef, orderBy('timeSent', 'asc'));
+
+            onSnapshot(q, (snapshot) => {
+                const isInitialLoad = messagesContainer.children.length <= 1; // Only loading indicator is present
+                let shouldScroll = false;
+
+                // Check if user is near the bottom
+                if (!isInitialLoad) {
+                    const scrollThreshold = messagesContainer.scrollHeight - messagesContainer.clientHeight - 100; // 100px from bottom
+                    shouldScroll = messagesContainer.scrollTop >= scrollThreshold;
+                } else {
+                    shouldScroll = true; // Always scroll on initial load
+                }
+
+                // Clear existing messages, remove loading indicator
+                messagesContainer.innerHTML = '';
+
+                snapshot.docs.forEach(doc => {
+                    renderMessage(doc.data());
+                });
+
+                // Scroll to bottom if it's the initial load or the user was already near the bottom
+                if (shouldScroll) {
+                    scrollToBottom(!isInitialLoad); // Smooth scroll if not initial load
+                }
+
+                // Hide loading indicator explicitly if any messages were loaded
+                if (snapshot.size > 0) {
+                    loadingIndicator.style.display = 'none';
+                }
+            }, (error) => {
+                console.error("Error listening to messages:", error);
+            });
+        }
+
+        /**
+         * Handles sending a new message to Firestore.
+         */
+        async function sendMessage(text) {
+            if (!text.trim() || !userNickname || !db) return;
+
+            messageInput.value = ''; // Clear input immediately
+            messageInput.disabled = true;
+            sendButton.disabled = true;
+
+            try {
+                const messagesRef = collection(db, `artifacts/${appId}/public/data/messages`);
+                await addDoc(messagesRef, {
+                    username: userNickname,
+                    userId: authUserId,
+                    text: text.trim(),
+                    timeSent: serverTimestamp()
+                });
+            } catch (error) {
+                console.error("Error sending message:", error);
+                // Optionally re-populate input on failure
+                // messageInput.value = text;
+            } finally {
+                messageInput.disabled = false;
+                sendButton.disabled = false;
+                messageInput.focus();
+            }
+        }
+
+        /**
+         * Main function to enable the chat interface after nickname is set.
+         */
+        function setupChatInterface() {
+            // Hide the modal
+            nicknameModal.style.display = 'none';
+
+            // Enable input and button
+            messageInput.disabled = false;
+            sendButton.disabled = false;
+            messageInput.focus();
+
+            // Update header info
+            userInfo.textContent = `Signed in as: ${userNickname} (ID: ${authUserId})`;
+
+            // Attach listeners
+            setupMessageListener();
+
+            messageForm.addEventListener('submit', (e) => {
+                e.preventDefault();
+                const text = messageInput.value;
+                sendMessage(text);
+            });
+        }
+
+        // --- Event Listeners and Initial Setup ---
+
+        nicknameForm.addEventListener('submit', (e) => {
+            e.preventDefault();
+            const nickname = nicknameInput.value.trim();
+            if (nickname) {
+                userNickname = nickname;
+                localStorage.setItem('chatNickname', nickname);
+                // If Firebase is already initialized, just set up the chat
+                if (authUserId) {
+                    setupChatInterface();
+                } else {
+                    // This scenario is unlikely due to onAuthStateChanged, but ensures readiness
+                    console.log("Nickname set, waiting for Firebase Auth.");
+                }
+            }
+        });
+
+        // Start the application
+        initializeFirebase();
+
+    </script>
+</body>
+</html>
+
